@@ -14,7 +14,7 @@ pub fn build(b: *std.Build) void {
 
     const lib = b.addStaticLibrary(.{
         .name = "diff-zimilar",
-        .root_source_file = .{ .path = "src/main.zig" },
+        .root_source_file = .{ .path = "src/lib.zig" },
         .target = target,
         .optimize = optimize,
     });

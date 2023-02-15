@@ -8,7 +8,7 @@ const cleanupMerge = lib.cleanupMerge;
 const cleanupSemanticLossless = lib.cleanupSemanticLossless;
 const cleanupSemantic = lib.cleanupSemantic;
 const bisect = lib.bisect;
-const main = lib.main;
+const diff = lib.diff;
 const testing = std.testing;
 const Range = lib.Range;
 const Diff = lib.Diff;
@@ -131,35 +131,35 @@ fn diffList(input: []const Diff) !Solution {
     var diffs = DiffList{};
     var text1_ = std.ArrayList(u8).init(talloc);
     var text2_ = std.ArrayList(u8).init(talloc);
-    for (input) |diff| switch (diff) {
+    for (input) |d| switch (d) {
         .insert => {},
-        .delete => try text1_.appendSlice(diff.text().doc),
-        .equal => try text1_.appendSlice(diff.text().doc),
+        .delete => try text1_.appendSlice(d.text().doc),
+        .equal => try text1_.appendSlice(d.text().doc),
     };
-    for (input) |diff| switch (diff) {
-        .insert => try text2_.appendSlice(diff.text().doc),
+    for (input) |d| switch (d) {
+        .insert => try text2_.appendSlice(d.text().doc),
         .delete => {},
-        .equal => try text2_.appendSlice(diff.text().doc),
+        .equal => try text2_.appendSlice(d.text().doc),
     };
     const text1 = Range.init(try text1_.toOwnedSlice());
     const text2 = Range.init(try text2_.toOwnedSlice());
 
     var i: usize = 0;
     var j: usize = 0;
-    for (input) |diff| switch (diff) {
+    for (input) |d| switch (d) {
         .insert => try diffs.append(talloc, insert(_range(
             text2.doc,
             &j,
-            diff.text().doc,
+            d.text().doc,
         ).doc)),
         .delete => try diffs.append(talloc, delete(_range(
             text1.doc,
             &i,
-            diff.text().doc,
+            d.text().doc,
         ).doc)),
         .equal => {
-            const r1 = _range(text1.doc, &i, diff.text().doc);
-            const r2 = _range(text2.doc, &j, diff.text().doc);
+            const r1 = _range(text1.doc, &i, d.text().doc);
+            const r2 = _range(text2.doc, &j, d.text().doc);
             try diffs.append(talloc, .{ .equal = .{ r1, r2 } });
         },
     };
@@ -516,12 +516,12 @@ fn expectMain(
 ) !void {
     std.log.debug("-- {s} --", .{test_name});
     var solution =
-        try main(talloc, try text1.dupe(talloc), try text2.dupe(talloc));
+        try diff(talloc, try text1.dupe(talloc), try text2.dupe(talloc));
     defer solution.deinit(talloc);
     try expectDiffs(expected, solution, test_name);
 }
 
-test main {
+test diff {
     try expectMain(Range.empty, Range.empty, &.{}, "Null case");
 
     try expectMain(range("abc"), range("abc"), &.{

@@ -126,7 +126,7 @@ pub const Solution = struct {
     }
 };
 
-pub fn main(allocator: mem.Allocator, text1_: Range, text2_: Range) !Solution {
+pub fn diff(allocator: mem.Allocator, text1_: Range, text2_: Range) !Solution {
     var text1 = text1_;
     var text2 = text2_;
     std.log.debug("main() {} {}", .{ text1, text2 });
@@ -378,8 +378,8 @@ pub fn bisectSplit(
     const text2b = text2s[1];
 
     // Compute both diffs serially.
-    var solution = try main(allocator, text1a, text2a);
-    var solution2 = try main(allocator, text1b, text2b);
+    var solution = try diff(allocator, text1a, text2a);
+    var solution2 = try diff(allocator, text1b, text2b);
     defer solution2.diffs.deinit(allocator);
     try solution.diffs.appendSlice(allocator, solution2.diffs.items);
     return solution.diffs;
