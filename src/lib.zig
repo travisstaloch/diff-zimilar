@@ -9,11 +9,13 @@ pub const std_options = struct {
     ).?;
 };
 
-const range = @import("range.zig");
-pub const Range = range.Range;
+const rg = @import("range.zig");
+pub const Range = rg.Range;
+pub const range = rg.range;
+
+pub const Error = mem.Allocator.Error;
 
 pub const DiffType = std.meta.Tag(Diff);
-
 pub const Diff = union(enum) {
     equal: [2]Range,
     delete: Range,
@@ -49,7 +51,6 @@ pub const Diff = union(enum) {
         }
     }
     pub fn growLeft(d: *Diff, increment: usize) void {
-        std.log.debug("growLeft({}, {})", .{ d.*, increment });
         forEach(d, increment, struct {
             fn f(r: *Range, inc: usize) void {
                 r.doc.ptr -= inc;
@@ -93,31 +94,21 @@ pub const Diff = union(enum) {
             .insert => "+",
             .delete => "-",
         };
-        // try writer.print(
-        //     "{s} {s}({})-{any}",
-        //     .{ prefix, d.first(), d.first().doc.len, d.first().doc },
-        // );
         try writer.print("{s} {s}", .{ prefix, d.text() });
     }
 };
 
+pub const DiffList = std.ArrayListUnmanaged(Diff);
+
 pub fn equal(s: []const u8) Diff {
-    return Diff.init(.equal, .{ Range.init(s), Range.init(s) });
+    return Diff.init(.equal, .{ range(s), range(s) });
 }
 pub fn delete(s: []const u8) Diff {
-    return Diff.init(.delete, Range.init(s));
+    return Diff.init(.delete, range(s));
 }
 pub fn insert(s: []const u8) Diff {
-    return Diff.init(.insert, Range.init(s));
+    return Diff.init(.insert, range(s));
 }
-
-pub const Chunk = union(DiffType) {
-    equal: []const u8,
-    delete: []const u8,
-    insert: []const u8,
-};
-
-pub const DiffList = std.ArrayListUnmanaged(Diff);
 
 pub const Solution = struct {
     text1: Range,
@@ -135,24 +126,280 @@ pub const Solution = struct {
     }
 };
 
+pub fn main(allocator: mem.Allocator, text1_: Range, text2_: Range) !Solution {
+    var text1 = text1_;
+    var text2 = text2_;
+    std.log.debug("main() {} {}", .{ text1, text2 });
+
+    // Trim off common prefix.
+    const common_prefix_len = commonPrefix(text1, text2);
+    const common_prefix = Diff.init(.equal, .{
+        text1.substringTo(common_prefix_len),
+        text2.substringTo(common_prefix_len),
+    });
+    text1 = text1.substringFrom(common_prefix_len);
+    text2 = text2.substringFrom(common_prefix_len);
+
+    // Trim off common suffix.
+    const common_suffix_len = commonSuffix(text1, text2);
+    const common_suffix = Diff.init(.equal, .{
+        text1.substringFrom(text1.doc.len - common_suffix_len),
+        text2.substringFrom(text2.doc.len - common_suffix_len),
+    });
+    text1 = text1.substringTo(text1.doc.len - common_suffix_len);
+    text2 = text2.substringTo(text2.doc.len - common_suffix_len);
+
+    // Compute the diff on the middle block.
+    var solution = Solution{
+        .text1 = text1_,
+        .text2 = text2_,
+        .diffs = try compute(allocator, text1, text2),
+    };
+    std.log.debug("main() computed diffs {any}", .{solution.diffs.items});
+
+    // Restore the prefix and suffix.
+    if (common_prefix_len > 0)
+        try solution.diffs.insert(allocator, 0, common_prefix);
+
+    if (common_suffix_len > 0)
+        try solution.diffs.append(allocator, common_suffix);
+
+    try cleanupMerge(allocator, &solution);
+
+    return solution;
+}
+
+// Find the differences between two texts. Assumes that the texts do not have
+// any common prefix or suffix.
+pub fn compute(allocator: mem.Allocator, text1: Range, text2: Range) !DiffList {
+    var diffs = DiffList{};
+
+    const is_emptys_ = [2]bool{ text1.isEmpty(), text2.isEmpty() };
+    const is_emptys: @Vector(2, bool) = is_emptys_;
+    switch (@bitCast(u2, is_emptys)) {
+        0b11 => return diffs,
+        0b01 => {
+            try diffs.append(allocator, Diff.init(.insert, text2));
+            return diffs;
+        },
+        0b10 => {
+            try diffs.append(allocator, Diff.init(.delete, text1));
+            return diffs;
+        },
+        0b00 => {},
+    }
+
+    // Check for entire shorter text inside the longer text.
+    if (text1.doc.len > text2.doc.len) {
+        if (text1.find(text2)) |i| {
+            try diffs.appendSlice(allocator, &.{
+                Diff.init(.delete, text1.substringTo(i)),
+                Diff.init(.equal, .{
+                    text1.substring(i, i + text2.doc.len),
+                    text2,
+                }),
+                Diff.init(.delete, text1.substringFrom(i + text2.doc.len)),
+            });
+            return diffs;
+        }
+    } else if (text2.find(text1)) |i| {
+        try diffs.appendSlice(allocator, &.{
+            Diff.init(.insert, text2.substringTo(i)),
+            Diff.init(.equal, .{
+                text1,
+                text2.substring(i, i + text1.doc.len),
+            }),
+            Diff.init(.insert, text2.substringFrom(i + text1.doc.len)),
+        });
+        return diffs;
+    }
+
+    if (text1.doc.len == 1 or text2.doc.len == 1) {
+        // Single character string.
+        // After the previous check, the character can't be an equality.
+        try diffs.appendSlice(allocator, &.{
+            Diff.init(.delete, text1),
+            Diff.init(.insert, text2),
+        });
+        return diffs;
+    }
+
+    return bisect(allocator, text1, text2);
+}
+
+// Find the 'middle snake' of a diff, split the problem in two and return the
+// recursively constructed diff.
+//
+// See Myers 1986 paper: An O(ND) Difference Algorithm and Its Variations.
+pub fn bisect(allocator: mem.Allocator, text1: Range, text2: Range) !DiffList {
+    const max_d = (text1.doc.len + text2.doc.len + 1) / 2;
+    const v_offset = max_d;
+    const v_len = 2 * max_d;
+    var v1 = try std.ArrayListUnmanaged(isize).initCapacity(allocator, v_len);
+    defer v1.deinit(allocator);
+    v1.items.len = v_len;
+    // TODO - maybe faster to do these mem.set()s together?
+    mem.set(isize, v1.items, -1);
+    var v2 = try std.ArrayListUnmanaged(isize).initCapacity(allocator, v_len);
+    defer v2.deinit(allocator);
+    v2.items.len = v_len;
+    mem.set(isize, v2.items, -1);
+    v1.items[v_offset + 1] = 0;
+    v2.items[v_offset + 1] = 0;
+    const delta = @intCast(isize, text1.doc.len) - @intCast(isize, text2.doc.len);
+    // If the total number of characters is odd, then the front path will
+    // collide with the reverse path.
+    const front = @mod(delta, 2) != 0;
+    // Offsets for start and end of k loop.
+    // Prevents mapping of space beyond the grid.
+    var k1start: isize = 0;
+    var k1end: isize = 0;
+    var k2start: isize = 0;
+    var k2end: isize = 0;
+    var d: isize = 0;
+    while (d < max_d) : (d += 1) {
+        // Walk the front path one step.
+        var k1 = -d + k1start;
+        while (k1 <= d - k1end) {
+            const k1_offset = @intCast(usize, (@intCast(isize, v_offset) + k1));
+            var x1 = @intCast(usize, if (k1 == -d or (k1 != d and
+                v1.items[k1_offset - 1] < v1.items[k1_offset + 1]))
+                v1.items[k1_offset + 1]
+            else
+                v1.items[k1_offset - 1] + 1);
+            var y1 = @intCast(usize, (@intCast(isize, x1) - k1));
+            if (x1 < text1.doc.len and y1 < text2.doc.len) {
+                const advance = commonPrefix(
+                    text1.substringFrom(x1),
+                    text2.substringFrom(y1),
+                );
+                x1 += advance;
+                y1 += advance;
+            }
+            v1.items[k1_offset] = @intCast(isize, x1);
+            if (x1 > text1.doc.len) {
+                // Ran off the right of the graph.
+                k1end += 2;
+            } else if (y1 > text2.doc.len) {
+                // Ran off the bottom of the graph.
+                k1start += 2;
+            } else if (front) {
+                const k2_offset = @intCast(isize, v_offset) + delta - k1;
+                if (k2_offset >= 0 and k2_offset < @intCast(isize, v_len) and
+                    v2.items[@intCast(usize, k2_offset)] != -1)
+                {
+                    // Mirror x2 onto top-left coordinate system.
+                    const x2 = @intCast(isize, text1.doc.len) -
+                        v2.items[@intCast(usize, k2_offset)];
+                    if (@intCast(isize, x1) >= x2) {
+                        // Overlap detected.
+                        std.log.debug(
+                            "bisect() overlap detected 1 {} {} {} {}",
+                            .{ text1, text2, x1, y1 },
+                        );
+                        return bisectSplit(allocator, text1, text2, x1, y1);
+                    }
+                }
+            }
+            k1 += 2;
+        }
+
+        // Walk the reverse path one step.
+        var k2 = -d + k2start;
+        while (k2 <= d - k2end) {
+            const k2_offset = @intCast(usize, (@intCast(isize, v_offset) + k2));
+            var x2 = @intCast(usize, if (k2 == -d or (k2 != d and
+                v2.items[k2_offset - 1] < v2.items[k2_offset + 1]))
+                v2.items[k2_offset + 1]
+            else
+                v2.items[k2_offset - 1] + 1);
+            var y2 = @intCast(usize, (@intCast(isize, x2) - k2));
+            if (x2 < text1.doc.len and y2 < text2.doc.len) {
+                const advance = commonSuffix(
+                    text1.substringTo(text1.doc.len - x2),
+                    text2.substringTo(text2.doc.len - y2),
+                );
+                x2 += advance;
+                y2 += advance;
+            }
+            v2.items[k2_offset] = @intCast(isize, x2);
+            if (x2 > text1.doc.len) {
+                // Ran off the left of the graph.
+                k2end += 2;
+            } else if (y2 > text2.doc.len) {
+                // Ran off the top of the graph.
+                k2start += 2;
+            } else if (!front) {
+                const k1_offset = @intCast(isize, v_offset) + delta - k2;
+                if (k1_offset >= 0 and k1_offset < @intCast(isize, v_len) and
+                    v1.items[@intCast(usize, k1_offset)] != -1)
+                {
+                    const x1 = @intCast(usize, v1.items[@intCast(usize, k1_offset)]);
+                    const y1 = v_offset + x1 - @intCast(usize, k1_offset);
+                    // Mirror x2 onto top-left coordinate system.
+                    x2 = text1.doc.len - x2;
+                    if (x1 >= x2) {
+                        // Overlap detected.
+                        std.log.debug(
+                            "bisect() overlap detected 2 {} {} {} {}",
+                            .{ text1, text2, x1, y1 },
+                        );
+                        return bisectSplit(allocator, text1, text2, x1, y1);
+                    }
+                }
+            }
+            k2 += 2;
+        }
+    }
+    // Number of diffs equals number of characters, no commonality at all.
+    var result = DiffList{};
+    std.log.debug("bisect() text1='{}' text2='{}'", .{ text1, text2 });
+    try result.appendSlice(allocator, &.{
+        Diff.init(.delete, text1),
+        Diff.init(.insert, text2),
+    });
+    return result;
+}
+
+// Given the location of the 'middle snake', split the diff in two parts and
+// recurse.
+pub fn bisectSplit(
+    allocator: mem.Allocator,
+    text1: Range,
+    text2: Range,
+    x: usize,
+    y: usize,
+) Error!DiffList {
+    const text1s = text1.splitAt(x);
+    const text1a = text1s[0];
+    const text1b = text1s[1];
+    const text2s = text2.splitAt(y);
+    const text2a = text2s[0];
+    const text2b = text2s[1];
+
+    // Compute both diffs serially.
+    var solution = try main(allocator, text1a, text2a);
+    var solution2 = try main(allocator, text1b, text2b);
+    defer solution2.diffs.deinit(allocator);
+    try solution.diffs.appendSlice(allocator, solution2.diffs.items);
+    return solution.diffs;
+}
+
 // Determine the length of the common prefix of two strings.
 pub fn commonPrefix(text1: Range, text2: Range) usize {
-    for (text1.doc) |b1, i| {
+    const min = @min(text1.doc.len, text2.doc.len);
+    for (text1.doc[0..min]) |b1, i| {
         if (b1 != text2.doc[i]) return i;
     }
-    return @min(text1.doc.len, text2.doc.len);
+    return min;
 }
 
 // Determine the length of the common suffix of two strings.
 pub fn commonSuffix(text1: Range, text2: Range) usize {
     const max = @min(text1.doc.len, text2.doc.len);
     var i: usize = 1;
-    const t1 = text1.doc;
-    const t2 = text2.doc;
-    std.log.debug("commonSuffix '{}' '{}' max {}", .{ text1, text2, max });
     while (i - 1 < max) : (i += 1) {
-        std.log.debug("  '{c}' '{c}'", .{ t1[text1.doc.len - i], t2[text2.doc.len - i] });
-        if (t1[text1.doc.len - i] != t2[text2.doc.len - i])
+        if (text1.doc[text1.doc.len - i] != text2.doc[text2.doc.len - i])
             return i - 1;
     }
     return max;
@@ -171,11 +418,10 @@ pub fn commonOverlap(text1_: Range, text2_: Range) usize {
     }
     // Truncate the longer string.
     if (text1.doc.len > text2.doc.len) {
-        text1 = text1.trimLeft(text1.doc.len - text2.doc.len);
+        text1 = text1.substringFrom(text1.doc.len - text2.doc.len);
     } else if (text1.doc.len < text2.doc.len) {
-        text2 = text2.trimRight(text1.doc.len);
+        text2 = text2.substringTo(text1.doc.len);
     }
-    std.log.debug("commonOverlap() text1 {} text2 {}", .{ text1, text2 });
     // Quick check for the worst case.
     if (text1.eql(text2)) {
         return text1.doc.len;
@@ -187,12 +433,12 @@ pub fn commonOverlap(text1_: Range, text2_: Range) usize {
     var best: usize = 0;
     var length: usize = 1;
     while (true) {
-        const pattern = text1.trimLeft(text1.doc.len - length);
+        const pattern = text1.substringFrom(text1.doc.len - length);
         const found = text2.find(pattern) orelse return best;
         length += found;
         if (found == 0 or
-            text1.trimLeft(text1.doc.len - length)
-            .eql(text2.trimRight(length)))
+            text1.substringFrom(text1.doc.len - length)
+            .eql(text2.substringTo(length)))
         {
             best = length;
             length += 1;
@@ -210,8 +456,8 @@ pub fn cleanupMerge(allocator: mem.Allocator, solution: *Solution) !void {
             .{ solution.text1, solution.text2, diffs.items },
         );
         try diffs.append(allocator, Diff.init(.equal, .{
-            solution.text1.trimLeft(solution.text1.doc.len),
-            solution.text2.trimLeft(solution.text2.doc.len),
+            solution.text1.substringFrom(solution.text1.doc.len),
+            solution.text2.substringFrom(solution.text2.doc.len),
         })); // Add a dummy entry at the end.
         var pointer: usize = 0;
         var count_delete: usize = 0;
@@ -224,24 +470,21 @@ pub fn cleanupMerge(allocator: mem.Allocator, solution: *Solution) !void {
             switch (this_diff) {
                 .insert => |text| {
                     count_insert += 1;
-                    if (text_insert.isEmpty()) {
-                        text_insert = text;
-                    } else {
+                    if (text_insert.isEmpty())
+                        text_insert = text
+                    else
                         text_insert.doc.len += text.doc.len;
-                    }
                 },
                 .delete => |text| {
                     count_delete += 1;
-                    if (text_delete.isEmpty()) {
-                        text_delete = text;
-                    } else {
+                    if (text_delete.isEmpty())
+                        text_delete = text
+                    else
                         text_delete.doc.len += text.doc.len;
-                    }
                 },
                 .equal => |texts| {
                     const text = texts[0];
                     const count_both = count_delete + count_insert;
-                    std.log.debug(".equal {} count_both {}", .{ text, count_both });
                     if (count_both > 1) {
                         const both_types = count_delete != 0 and
                             count_insert != 0;
@@ -269,25 +512,31 @@ pub fn cleanupMerge(allocator: mem.Allocator, solution: *Solution) !void {
                                             prev.equal[0].doc.len += common_length;
                                             prev.equal[1].doc.len += common_length;
                                         },
-                                        else => panicf("previous diff should have been an equality", .{}),
+                                        else => panicf(
+                                            "previous diff should have been an equality",
+                                            .{},
+                                        ),
                                     }
                                 } else {
                                     try diffs.insert(
                                         allocator,
                                         pointer,
                                         Diff.init(.equal, .{
-                                            text_delete.trimRight(common_length),
-                                            text_insert.trimRight(common_length),
+                                            text_delete.substringTo(common_length),
+                                            text_insert.substringTo(common_length),
                                         }),
                                     );
                                     pointer += 1;
                                 }
-                                text_insert = text_insert.trimLeft(common_length);
-                                text_delete = text_delete.trimLeft(common_length);
+                                text_insert =
+                                    text_insert.substringFrom(common_length);
+                                text_delete =
+                                    text_delete.substringFrom(common_length);
                             }
 
                             // Factor out any common suffix.
-                            const common_length2 = commonSuffix(text_insert, text_delete);
+                            const common_length2 =
+                                commonSuffix(text_insert, text_delete);
                             std.log.debug(
                                 "2 text_insert {} text_delete {} common_length2 {}",
                                 .{ text_insert, text_delete, common_length2 },
@@ -318,7 +567,6 @@ pub fn cleanupMerge(allocator: mem.Allocator, solution: *Solution) !void {
                     } else if (pointer > 0) {
                         var prev = &diffs.items[pointer - 1];
                         if (prev.* == .equal) {
-                            std.log.debug("prev equal {}", .{prev});
                             // Merge this equality with the previous one.
                             prev.equal[0].doc.len += text.doc.len;
                             prev.equal[1].doc.len += text.doc.len;
@@ -334,9 +582,8 @@ pub fn cleanupMerge(allocator: mem.Allocator, solution: *Solution) !void {
             }
             pointer += 1;
         }
-        if (diffs.items[diffs.items.len - 1].text().isEmpty()) {
+        if (diffs.items[diffs.items.len - 1].text().isEmpty())
             _ = diffs.pop(); // Remove the dummy entry at the end.
-        }
 
         // Second pass: look for single edits surrounded on both sides by equalities
         // which can be shifted sideways to eliminate an equality.
@@ -344,7 +591,6 @@ pub fn cleanupMerge(allocator: mem.Allocator, solution: *Solution) !void {
         var changes = false;
         var pointer2: usize = 1;
         // Intentionally ignore the first and last element (don't need checking).
-        // while const Some(&next_diff) = diffs.get(pointer2 + 1) {
         while (pointer2 + 1 < diffs.items.len) {
             const next_diff = diffs.items[pointer2 + 1];
             const prev_diff = diffs.items[pointer2 - 1];
@@ -373,6 +619,162 @@ pub fn cleanupMerge(allocator: mem.Allocator, solution: *Solution) !void {
         if (!changes) {
             return;
         }
+    }
+}
+
+// Reduce the number of edits by eliminating semantically trivial equalities.
+pub fn cleanupSemantic(allocator: mem.Allocator, solution: *Solution) !void {
+    var diffs = &solution.diffs;
+    if (diffs.items.len == 0) return;
+
+    var changes = false;
+    const VecDeque = std.TailQueue(usize);
+    var equalities = VecDeque{};
+    defer while (equalities.pop()) |n| allocator.destroy(n);
+
+    var last_equality: ?[2]Range = null; // Always equal to equalities.peek().text
+    var pointer: usize = 0;
+    // Number of characters that changed prior to the equality.
+    var len_insertions1: usize = 0;
+    var len_deletions1: usize = 0;
+    // Number of characters that changed after the equality.
+    var len_insertions2: usize = 0;
+    var len_deletions2: usize = 0;
+    while (pointer < diffs.items.len) {
+        const this_diff = diffs.items[pointer];
+        switch (this_diff) {
+            .equal => |texts| {
+                const text1 = texts[0];
+                const text2 = texts[1];
+                const node = try allocator.create(VecDeque.Node);
+                node.* = .{ .data = pointer };
+                equalities.append(node);
+                len_insertions1 = len_insertions2;
+                len_deletions1 = len_deletions2;
+                len_insertions2 = 0;
+                len_deletions2 = 0;
+                last_equality = .{ text1, text2 };
+                pointer += 1;
+                continue;
+            },
+            .delete => |text| len_deletions2 += text.doc.len,
+            .insert => |text| len_insertions2 += text.doc.len,
+        }
+        // Eliminate an equality that is smaller or equal to the edits on both
+        // sides of it.
+        const x = if (last_equality) |leq|
+            leq[0].doc.len <= @max(len_insertions1, len_deletions1) and
+                leq[0].doc.len <= @max(len_insertions2, len_deletions2)
+        else
+            false;
+
+        if (x) {
+            // Jump back to offending equality.
+            // pointer = equalities.pop_back();
+            const node = equalities.pop() orelse unreachable;
+            pointer = node.data;
+            allocator.destroy(node);
+
+            // Replace equality with a delete.
+            diffs.items[pointer] = Diff.init(.delete, last_equality.?[0]);
+            // Insert a corresponding insert.
+            try diffs.insert(
+                allocator,
+                pointer + 1,
+                Diff.init(.insert, last_equality.?[1]),
+            );
+
+            len_insertions1 = 0; // Reset the counters.
+            len_insertions2 = 0;
+            len_deletions1 = 0;
+            len_deletions2 = 0;
+            last_equality = null;
+            changes = true;
+
+            // Throw away the previous equality (it needs to be reevaluated).
+            if (equalities.pop()) |n|
+                allocator.destroy(n);
+            if (equalities.last) |back| {
+                // There is a safe equality we can fall back to.
+                pointer = back.data;
+            } else {
+                // There are no previous equalities, jump back to the start.
+                pointer = 0;
+                continue;
+            }
+        }
+        pointer += 1;
+    }
+
+    // Normalize the diff.
+    if (changes) try cleanupMerge(allocator, solution);
+
+    try cleanupSemanticLossless(allocator, solution);
+    diffs = &solution.diffs;
+
+    // Find any overlaps between deletions and insertions.
+    // e.g: <del>abcxxx</del><ins>xxxdef</ins>
+    //   -> <del>abc</del>xxx<ins>def</ins>
+    // e.g: <del>xxxabc</del><ins>defxxx</ins>
+    //   -> <ins>def</ins>xxx<del>abc</del>
+    // Only extract an overlap if it is as big as the edit ahead or behind it.
+    var pointer2: usize = 1;
+    while (pointer2 < diffs.items.len) {
+        const this_diff = diffs.items[pointer2];
+        const prev_diff = diffs.items[pointer2 - 1];
+        if (prev_diff == .delete and this_diff == .insert) {
+            const deletion = prev_diff.delete;
+            const insertion = this_diff.insert;
+            const overlap_len1 = commonOverlap(deletion, insertion);
+            const overlap_len2 = commonOverlap(insertion, deletion);
+            const overlap_min = @min(deletion.doc.len, insertion.doc.len);
+            if (overlap_len1 >= overlap_len2 and 2 * overlap_len1 >= overlap_min) {
+                // Overlap found. Insert an equality and trim the surrounding edits.
+                try diffs.insert(
+                    allocator,
+                    pointer2,
+                    Diff.init(.equal, .{
+                        deletion.substring(
+                            deletion.doc.len - overlap_len1,
+                            deletion.doc.len,
+                        ),
+                        insertion.substringTo(overlap_len1),
+                    }),
+                );
+                diffs.items[pointer2 - 1] = Diff.init(
+                    .delete,
+                    deletion.substringTo(deletion.doc.len - overlap_len1),
+                );
+                diffs.items[pointer2 + 1] =
+                    Diff.init(.insert, insertion.substringFrom(overlap_len1));
+            } else if (overlap_len1 < overlap_len2 and
+                2 * overlap_len2 >= overlap_min)
+            {
+                // Reverse overlap found.
+                // Insert an equality and swap and trim the surrounding edits.
+                try diffs.insert(
+                    allocator,
+                    pointer2,
+                    Diff.init(.equal, .{
+                        deletion.substringTo(overlap_len2),
+                        insertion.substring(
+                            insertion.doc.len - overlap_len2,
+                            insertion.doc.len,
+                        ),
+                    }),
+                );
+                diffs.items[pointer2 - 1] = Diff.init(
+                    .insert,
+                    insertion.substringTo(insertion.doc.len - overlap_len2),
+                );
+                diffs.items[pointer2 + 1] = Diff.init(
+                    .delete,
+                    deletion.substringFrom(overlap_len2),
+                );
+            }
+            pointer2 += 1;
+        }
+        pointer2 += 1;
     }
 }
 
@@ -438,20 +840,24 @@ pub fn cleanupSemanticLossless(_: mem.Allocator, solution: *Solution) !void {
 
             if (original_prev_len != best_prev_equal[0].doc.len) {
                 // We have an improvement, save it back to the diff.
-                if (best_next_equal[0].isEmpty()) {
-                    _ = diffs.orderedRemove(pointer + 1);
-                } else {
+                if (best_next_equal[0].isEmpty())
+                    _ = diffs.orderedRemove(pointer + 1)
+                else
                     diffs.items[pointer + 1] =
-                        Diff.init(.equal, .{ best_next_equal[0], best_next_equal[1] });
-                }
+                        Diff.init(.equal, .{
+                        best_next_equal[0],
+                        best_next_equal[1],
+                    });
+
                 diffs.items[pointer] = best_edit;
                 if (best_prev_equal[0].isEmpty()) {
                     _ = diffs.orderedRemove(pointer - 1);
                     pointer -= 1;
-                } else {
-                    diffs.items[pointer - 1] =
-                        Diff.init(.equal, .{ best_prev_equal[0], best_prev_equal[1] });
-                }
+                } else diffs.items[pointer - 1] =
+                    Diff.init(.equal, .{
+                    best_prev_equal[0],
+                    best_prev_equal[1],
+                });
             }
         }
         pointer += 1;

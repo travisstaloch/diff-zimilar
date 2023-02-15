@@ -18,11 +18,8 @@ const Chunk = lib.Chunk;
 const equal = lib.equal;
 const delete = lib.delete;
 const insert = lib.insert;
+const range = lib.range;
 const talloc = testing.allocator;
-
-fn range(s: []const u8) Range {
-    return Range.init(s);
-}
 
 fn expectEqual(
     expected: anytype,
@@ -146,7 +143,7 @@ fn diffList(input: []const Diff) !Solution {
     };
     const text1 = Range.init(try text1_.toOwnedSlice());
     const text2 = Range.init(try text2_.toOwnedSlice());
-    std.log.debug("text1 '{s}' text2 '{s}'", .{ text1.doc, text2.doc });
+
     var i: usize = 0;
     var j: usize = 0;
     for (input) |diff| switch (diff) {
@@ -195,6 +192,7 @@ fn sameDiffs(expecteds: []const Diff, actuals: []const Diff) bool {
 
 const expectCleanupMerge = expectDiffsFn(cleanupMerge);
 const expectCleanupSemanticLossless = expectDiffsFn(cleanupSemanticLossless);
+const expectCleanupSemantic = expectDiffsFn(cleanupSemantic);
 
 const Error = mem.Allocator.Error ||
     error{UnexpectedResult};
@@ -308,7 +306,6 @@ test cleanupMerge {
 test cleanupSemanticLossless {
     try expectCleanupSemanticLossless(&.{}, &.{}, "Null case");
 
-    testing.log_level = .debug;
     try expectCleanupSemanticLossless(&.{
         equal("AAA\r\n\r\nBBB"),
         insert("\r\nDDD\r\n\r\nBBB"),
@@ -376,4 +373,242 @@ test cleanupSemanticLossless {
         insert(" The zzz."),
         equal(" The yyy."),
     }, "Sentence boundaries");
+}
+
+test cleanupSemantic {
+    try expectCleanupSemantic(&.{}, &.{}, "Null case");
+
+    try expectCleanupSemantic(&.{
+        delete("ab"),
+        insert("cd"),
+        equal("12"),
+        delete("e"),
+    }, &.{
+        delete("ab"),
+        insert("cd"),
+        equal("12"),
+        delete("e"),
+    }, "No elimination #1");
+
+    try expectCleanupSemantic(&.{
+        delete("abc"),
+        insert("ABC"),
+        equal("1234"),
+        delete("wxyz"),
+    }, &.{
+        delete("abc"),
+        insert("ABC"),
+        equal("1234"),
+        delete("wxyz"),
+    }, "No elimination #2");
+
+    try expectCleanupSemantic(&.{
+        delete("a"),
+        equal("b"),
+        delete("c"),
+    }, &.{
+        delete("abc"),
+        insert("b"),
+    }, "Simple elimination");
+
+    try expectCleanupSemantic(&.{
+        delete("ab"),
+        equal("cd"),
+        delete("e"),
+        equal("f"),
+        insert("g"),
+    }, &.{
+        delete("abcdef"),
+        insert("cdfg"),
+    }, "Backpass elimination");
+
+    try expectCleanupSemantic(&.{
+        insert("1"),
+        equal("A"),
+        delete("B"),
+        insert("2"),
+        equal("_"),
+        insert("1"),
+        equal("A"),
+        delete("B"),
+        insert("2"),
+    }, &.{
+        delete("AB_AB"),
+        insert("1A2_1A2"),
+    }, "Multiple elimination");
+
+    try expectCleanupSemantic(&.{
+        equal("The c"),
+        delete("ow and the c"),
+        equal("at."),
+    }, &.{
+        equal("The "),
+        delete("cow and the "),
+        equal("cat."),
+    }, "Word boundaries");
+
+    try expectCleanupSemantic(&.{
+        delete("abcxx"),
+        insert("xxdef"),
+    }, &.{
+        delete("abcxx"),
+        insert("xxdef"),
+    }, "No overlap elimination");
+
+    try expectCleanupSemantic(&.{
+        delete("abcxxx"),
+        insert("xxxdef"),
+    }, &.{
+        delete("abc"),
+        equal("xxx"),
+        insert("def"),
+    }, "Overlap elimination");
+
+    try expectCleanupSemantic(&.{
+        delete("xxxabc"),
+        insert("defxxx"),
+    }, &.{
+        insert("def"),
+        equal("xxx"),
+        delete("abc"),
+    }, "Reverse overlap elimination");
+
+    try expectCleanupSemantic(&.{
+        delete("abcd1212"),
+        insert("1212efghi"),
+        equal("----"),
+        delete("A3"),
+        insert("3BC"),
+    }, &.{
+        delete("abcd"),
+        equal("1212"),
+        insert("efghi"),
+        equal("----"),
+        delete("A"),
+        equal("3"),
+        insert("BC"),
+    }, "Two overlap eliminations");
+}
+
+test bisect {
+    const text1 = range(try talloc.dupe(u8, "cat"));
+    const text2 = range(try talloc.dupe(u8, "map"));
+    var solution = Solution{
+        .text1 = text1,
+        .text2 = text2,
+        .diffs = try bisect(talloc, text1, text2),
+    };
+    defer solution.deinit(talloc);
+    try expectDiffs(&.{
+        delete("c"),
+        insert("m"),
+        equal("a"),
+        delete("t"),
+        insert("p"),
+    }, solution, "Normal");
+}
+
+fn expectMain(
+    text1: Range,
+    text2: Range,
+    expected: []const Diff,
+    test_name: []const u8,
+) !void {
+    std.log.debug("-- {s} --", .{test_name});
+    var solution =
+        try main(talloc, try text1.dupe(talloc), try text2.dupe(talloc));
+    defer solution.deinit(talloc);
+    try expectDiffs(expected, solution, test_name);
+}
+
+test main {
+    try expectMain(Range.empty, Range.empty, &.{}, "Null case");
+
+    try expectMain(range("abc"), range("abc"), &.{
+        equal("abc"),
+    }, "Equality");
+
+    try expectMain(range("abc"), range("ab123c"), &.{
+        equal("ab"),
+        insert("123"),
+        equal("c"),
+    }, "Simple insertion");
+
+    try expectMain(range("a123bc"), range("abc"), &.{
+        equal("a"),
+        delete("123"),
+        equal("bc"),
+    }, "Simple deletion");
+
+    try expectMain(range("abc"), range("a123b456c"), &.{
+        equal("a"),
+        insert("123"),
+        equal("b"),
+        insert("456"),
+        equal("c"),
+    }, "Two insertions");
+
+    try expectMain(range("a123b456c"), range("abc"), &.{
+        equal("a"),
+        delete("123"),
+        equal("b"),
+        delete("456"),
+        equal("c"),
+    }, "Two deletions");
+
+    try expectMain(range("a"), range("b"), &.{
+        delete("a"),
+        insert("b"),
+    }, "Simple case #1");
+
+    try expectMain(range("Apples are a fruit."), range("Bananas are also fruit."), &.{
+        delete("Apple"),
+        insert("Banana"),
+        equal("s are a"),
+        insert("lso"),
+        equal(" fruit."),
+    }, "Simple case #2");
+
+    try expectMain(range("ax\t"), range("\u{0680}x\x0000"), &.{
+        delete("a"),
+        insert("\u{0680}"),
+        equal("x"),
+        delete("\t"),
+        insert("\x0000"),
+    }, "Simple case #3");
+
+    try expectMain(range("1ayb2"), range("abxab"), &.{
+        delete("1"),
+        equal("a"),
+        delete("y"),
+        equal("b"),
+        delete("2"),
+        insert("xab"),
+    }, "Overlap #1");
+
+    try expectMain(range("abcy"), range("xaxcxabc"), &.{
+        insert("xaxcx"),
+        equal("abc"),
+        delete("y"),
+    }, "Overlap #2");
+
+    try expectMain(range("ABCDa=bcd=efghijklmnopqrsEFGHIJKLMNOefg"), range("a-bcd-efghijklmnopqrs"), &.{
+        delete("ABCD"),
+        equal("a"),
+        delete("="),
+        insert("-"),
+        equal("bcd"),
+        delete("="),
+        insert("-"),
+        equal("efghijklmnopqrs"),
+        delete("EFGHIJKLMNOefg"),
+    }, "Overlap #3");
+
+    try expectMain(range("a [[Pennsylvania]] and [[New"), range(" and [[Pennsylvania]]"), &.{
+        insert(" "),
+        equal("a"),
+        insert("nd"),
+        equal(" [[Pennsylvania]]"),
+        delete(" and [[New"),
+    }, "Large equality");
 }
