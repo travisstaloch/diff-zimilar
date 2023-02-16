@@ -436,22 +436,21 @@ pub fn bisectSplit(
 
 // Determine the length of the common prefix of two strings.
 pub fn commonPrefix(text1: Range, text2: Range) usize {
-    const min = @min(text1.doc.len, text2.doc.len);
-    for (text1.doc[0..min]) |b1, i| {
-        if (b1 != text2.doc[i]) return i;
-    }
-    return min;
+    const min_len = @min(text1.doc.len, text2.doc.len);
+    var i: usize = 0;
+    while (i < min_len) : (i += 1)
+        if (text1.doc[i] != text2.doc[i]) return i;
+    return min_len;
 }
 
 // Determine the length of the common suffix of two strings.
 pub fn commonSuffix(text1: Range, text2: Range) usize {
-    const max = @min(text1.doc.len, text2.doc.len);
+    const min_len = @min(text1.doc.len, text2.doc.len);
     var i: usize = 1;
-    while (i - 1 < max) : (i += 1) {
+    while (i <= min_len) : (i += 1)
         if (text1.doc[text1.doc.len - i] != text2.doc[text2.doc.len - i])
             return i - 1;
-    }
-    return max;
+    return min_len;
 }
 
 // Determine if the suffix of one string is the prefix of another.
