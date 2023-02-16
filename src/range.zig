@@ -54,6 +54,15 @@ pub const Range = struct {
         return range(try allocator.dupe(u8, r.doc));
     }
 
+    pub fn lenBytes(r: Range) usize {
+        var result: usize = 0;
+        var iter = std.unicode.Utf8Iterator{ .bytes = r.doc, .i = 0 };
+        while (iter.nextCodepointSlice()) |bytes| {
+            result += bytes.len;
+        }
+        return result;
+    }
+
     pub fn format(
         r: Range,
         comptime _: []const u8,

@@ -126,7 +126,56 @@ pub const Solution = struct {
     }
 };
 
-pub fn diff(allocator: mem.Allocator, text1_: Range, text2_: Range) !Solution {
+pub const Chunk = union(DiffType) {
+    equal: []const u8,
+    delete: []const u8,
+    insert: []const u8,
+};
+
+pub fn diff(
+    allocator: mem.Allocator,
+    text1: []const u8,
+    text2: []const u8,
+) !std.ArrayListUnmanaged(Chunk) {
+    const range1 = range(text1);
+    const range2 = range(text2);
+
+    var solution = try diffMain(allocator, range1, range2);
+    cleanupCharBoundary(allocator, &solution);
+    try cleanupSemantic(allocator, &solution);
+    try cleanupMerge(allocator, &solution);
+
+    var chunks = std.ArrayListUnmanaged(Chunk){};
+    var pos1: usize = 0;
+    var pos2: usize = 0;
+    for (solution.diffs.items) |d| {
+        try chunks.append(allocator, switch (d) {
+            .equal => |rs| blk: {
+                const r = rs[0];
+                const len = r.lenBytes();
+                const chunk = Chunk{ .equal = text1[pos1 .. pos1 + len] };
+                pos1 += len;
+                pos2 += len;
+                break :blk chunk;
+            },
+            .delete => |r| blk: {
+                const len = r.lenBytes();
+                const chunk = Chunk{ .delete = text1[pos1 .. pos1 + len] };
+                pos1 += len;
+                break :blk chunk;
+            },
+            .insert => |r| blk: {
+                const len = r.lenBytes();
+                const chunk = Chunk{ .insert = text2[pos2 .. pos2 + len] };
+                pos2 += len;
+                break :blk chunk;
+            },
+        });
+    }
+    return chunks;
+}
+
+pub fn diffMain(allocator: mem.Allocator, text1_: Range, text2_: Range) !Solution {
     var text1 = text1_;
     var text2 = text2_;
     std.log.debug("main() {} {}", .{ text1, text2 });
@@ -378,8 +427,8 @@ pub fn bisectSplit(
     const text2b = text2s[1];
 
     // Compute both diffs serially.
-    var solution = try diff(allocator, text1a, text2a);
-    var solution2 = try diff(allocator, text1b, text2b);
+    var solution = try diffMain(allocator, text1a, text2a);
+    var solution2 = try diffMain(allocator, text1b, text2b);
     defer solution2.diffs.deinit(allocator);
     try solution.diffs.appendSlice(allocator, solution2.diffs.items);
     return solution.diffs;
@@ -620,6 +669,91 @@ pub fn cleanupMerge(allocator: mem.Allocator, solution: *Solution) !void {
             return;
         }
     }
+}
+fn isSegmentationBoundary(doc: []const u8, pos: [*]const u8) bool {
+    // FIXME: use unicode-segmentation crate?
+    _ = doc;
+    _ = pos;
+    return true;
+}
+
+fn boundaryDown(doc: []const u8, pos: [*]const u8) usize {
+    var adjust: usize = 0;
+    while (!isSegmentationBoundary(doc, pos - adjust))
+        adjust += 1;
+    return adjust;
+}
+
+fn boundaryUp(doc: []const u8, ptr: [*]const u8) usize {
+    var adjust: usize = 0;
+    while (!isSegmentationBoundary(doc, ptr + adjust))
+        adjust += 1;
+
+    return adjust;
+}
+
+fn skipOverlap(prev: Range, r: *Range) void {
+    const prev_end = @ptrToInt(prev.doc.ptr + prev.doc.len);
+    const rdoc_ptr = @ptrToInt(r.doc.ptr);
+    if (prev_end > rdoc_ptr) {
+        const delta = @min(prev_end - rdoc_ptr, r.doc.len);
+        r.doc.ptr += delta;
+        r.doc.len -= delta;
+    }
+}
+
+fn cleanupCharBoundary(allocator: mem.Allocator, solution: *Solution) void {
+    var read: usize = 0;
+    var retain: usize = 0;
+    var last_delete = Range.empty;
+    var last_insert = Range.empty;
+    while (read < solution.diffs.items.len) {
+        var d = solution.diffs.items[read];
+        read += 1;
+        switch (d) {
+            .equal => |ranges| {
+                var range1 = ranges[0];
+                var range2 = ranges[1];
+                const adjust = boundaryUp(range1.doc, range1.doc.ptr);
+                // If the whole range is sub-character, skip it.
+                if (range1.doc.len <= adjust) continue;
+
+                range1.doc.ptr += adjust;
+                range1.doc.len -= adjust;
+                range2.doc.ptr += adjust;
+                range2.doc.len -= adjust;
+                const adjust2 = boundaryDown(range1.doc, range1.doc.ptr + range1.doc.len);
+                range1.doc.len -= adjust2;
+                range2.doc.len -= adjust2;
+                last_delete = Range.empty;
+                last_insert = Range.empty;
+            },
+            .delete => |*r| {
+                skipOverlap(last_delete, r);
+                if (r.doc.len == 0) continue;
+
+                const adjust = boundaryDown(r.doc, r.doc.ptr);
+                r.doc.ptr -= adjust;
+                r.doc.len += adjust;
+                r.doc.len += boundaryUp(r.doc, r.doc.ptr + r.doc.len);
+                last_delete = r.*;
+            },
+            .insert => |*r| {
+                skipOverlap(last_insert, r);
+                if (r.doc.len == 0) continue;
+
+                const adjust = boundaryDown(r.doc, r.doc.ptr);
+                r.doc.ptr -= adjust;
+                r.doc.len += adjust;
+                r.doc.len += boundaryUp(r.doc, r.doc.ptr + r.doc.len);
+                last_insert = r.*;
+            },
+        }
+        solution.diffs.items[retain] = d;
+        retain += 1;
+    }
+
+    solution.diffs.shrinkAndFree(allocator, retain);
 }
 
 // Reduce the number of edits by eliminating semantically trivial equalities.

@@ -8,7 +8,7 @@ const cleanupMerge = lib.cleanupMerge;
 const cleanupSemanticLossless = lib.cleanupSemanticLossless;
 const cleanupSemantic = lib.cleanupSemantic;
 const bisect = lib.bisect;
-const diff = lib.diff;
+const diffMain = lib.diffMain;
 const testing = std.testing;
 const Range = lib.Range;
 const Diff = lib.Diff;
@@ -515,12 +515,12 @@ fn expectMain(
 ) !void {
     std.log.debug("-- {s} --", .{test_name});
     var solution =
-        try diff(talloc, try text1.dupe(talloc), try text2.dupe(talloc));
+        try diffMain(talloc, try text1.dupe(talloc), try text2.dupe(talloc));
     defer solution.deinit(talloc);
     try expectDiffs(expected, solution, test_name);
 }
 
-test diff {
+test diffMain {
     try expectMain(Range.empty, Range.empty, &.{}, "Null case");
 
     try expectMain(range("abc"), range("abc"), &.{
