@@ -14,7 +14,6 @@ const Range = lib.Range;
 const Diff = lib.Diff;
 const DiffList = lib.DiffList;
 const Solution = lib.Solution;
-const Chunk = lib.Chunk;
 const equal = lib.equal;
 const delete = lib.delete;
 const insert = lib.insert;
