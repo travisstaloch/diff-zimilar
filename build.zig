@@ -21,6 +21,15 @@ pub fn build(b: *std.Build) void {
     lib.addOptions("build_options", build_options);
     lib.install();
 
+    const exe = b.addExecutable(.{
+        .name = "diffit",
+        .root_source_file = .{ .path = "src/main.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
+    exe.addOptions("build_options", build_options);
+    exe.install();
+
     const test_filter = b.option([]const u8, "test-filter", "test filter");
 
     const main_tests = b.addTest(.{

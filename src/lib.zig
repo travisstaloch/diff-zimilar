@@ -130,6 +130,15 @@ pub const Chunk = union(DiffType) {
     equal: []const u8,
     delete: []const u8,
     insert: []const u8,
+
+    /// adapted from https://github.com/tomhoule/zig-diff/blob/68066d2845df6b64acf554b0d3ea235d4b09b5e0/src/main.zig#L81
+    pub fn format(chunk: Chunk, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        switch (chunk) {
+            .equal => |s| try writer.writeAll(s),
+            .delete => |s| try writer.print("\x1b[41m{s}\x1b[0m", .{s}),
+            .insert => |s| try writer.print("\x1b[42m{s}\x1b[0m", .{s}),
+        }
+    }
 };
 
 pub fn diff(
@@ -137,10 +146,7 @@ pub fn diff(
     text1: []const u8,
     text2: []const u8,
 ) !std.ArrayListUnmanaged(Chunk) {
-    const range1 = range(text1);
-    const range2 = range(text2);
-
-    var solution = try diffMain(allocator, range1, range2);
+    var solution = try diffMain(allocator, range(text1), range(text2));
     cleanupCharBoundary(allocator, &solution);
     try cleanupSemantic(allocator, &solution);
     try cleanupMerge(allocator, &solution);
