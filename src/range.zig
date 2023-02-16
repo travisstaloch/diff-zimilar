@@ -55,12 +55,11 @@ pub const Range = struct {
     }
 
     pub fn lenBytes(r: Range) usize {
-        var result: usize = 0;
-        var iter = std.unicode.Utf8Iterator{ .bytes = r.doc, .i = 0 };
-        while (iter.nextCodepointSlice()) |bytes| {
-            result += bytes.len;
+        var i: usize = 0;
+        while (i < r.doc.len) {
+            i += std.unicode.utf8ByteSequenceLength(r.doc[i]) catch break;
         }
-        return result;
+        return i;
     }
 
     pub fn format(
