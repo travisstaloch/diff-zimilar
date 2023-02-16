@@ -611,3 +611,15 @@ test diffMain {
         delete(" and [[New"),
     }, "Large equality");
 }
+
+test "readme" {
+    const diff = @import("lib.zig");
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    const aalloc = arena.allocator();
+    const file_a = std.fs.cwd().openFile("/path/to/file_a", .{}) catch return;
+    const file_b = std.fs.cwd().openFile("/path/to/file_b", .{}) catch return;
+    const doc_a = try file_a.readToEndAlloc(aalloc, std.math.maxInt(u32));
+    const doc_b = try file_b.readToEndAlloc(aalloc, std.math.maxInt(u32));
+    var chunks = try diff.diff(aalloc, doc_a, doc_b);
+    defer chunks.deinit(aalloc);
+}
