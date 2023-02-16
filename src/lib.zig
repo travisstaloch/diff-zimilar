@@ -628,9 +628,8 @@ pub fn cleanupSemantic(allocator: mem.Allocator, solution: *Solution) !void {
     if (diffs.items.len == 0) return;
 
     var changes = false;
-    const VecDeque = std.TailQueue(usize);
-    var equalities = VecDeque{};
-    defer while (equalities.pop()) |n| allocator.destroy(n);
+    var equalities = std.ArrayListUnmanaged(usize){};
+    defer equalities.deinit(allocator);
 
     var last_equality: ?[2]Range = null; // Always equal to equalities.peek().text
     var pointer: usize = 0;
@@ -646,9 +645,7 @@ pub fn cleanupSemantic(allocator: mem.Allocator, solution: *Solution) !void {
             .equal => |texts| {
                 const text1 = texts[0];
                 const text2 = texts[1];
-                const node = try allocator.create(VecDeque.Node);
-                node.* = .{ .data = pointer };
-                equalities.append(node);
+                try equalities.append(allocator, pointer);
                 len_insertions1 = len_insertions2;
                 len_deletions1 = len_deletions2;
                 len_insertions2 = 0;
@@ -670,10 +667,7 @@ pub fn cleanupSemantic(allocator: mem.Allocator, solution: *Solution) !void {
 
         if (x) {
             // Jump back to offending equality.
-            // pointer = equalities.pop_back();
-            const node = equalities.pop() orelse unreachable;
-            pointer = node.data;
-            allocator.destroy(node);
+            pointer = equalities.pop();
 
             // Replace equality with a delete.
             diffs.items[pointer] = Diff.init(.delete, last_equality.?[0]);
@@ -692,11 +686,11 @@ pub fn cleanupSemantic(allocator: mem.Allocator, solution: *Solution) !void {
             changes = true;
 
             // Throw away the previous equality (it needs to be reevaluated).
-            if (equalities.pop()) |n|
-                allocator.destroy(n);
-            if (equalities.last) |back| {
+            _ = equalities.popOrNull();
+
+            if (equalities.getLastOrNull()) |back| {
                 // There is a safe equality we can fall back to.
-                pointer = back.data;
+                pointer = back;
             } else {
                 // There are no previous equalities, jump back to the start.
                 pointer = 0;
