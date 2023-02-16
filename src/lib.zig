@@ -130,17 +130,11 @@ pub const Chunk = union(DiffType) {
     equal: []const u8,
     delete: []const u8,
     insert: []const u8,
-
-    /// adapted from https://github.com/tomhoule/zig-diff/blob/68066d2845df6b64acf554b0d3ea235d4b09b5e0/src/main.zig#L81
-    pub fn format(chunk: Chunk, comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
-        switch (chunk) {
-            .equal => |s| try writer.writeAll(s),
-            .delete => |s| try writer.print("\x1b[41m{s}\x1b[0m", .{s}),
-            .insert => |s| try writer.print("\x1b[42m{s}\x1b[0m", .{s}),
-        }
-    }
 };
 
+/// The main api endpoint.
+/// text1 and text2 are the inputs to be diffed.
+/// returns a list of chunks which are slices of the input strings.
 pub fn diff(
     allocator: mem.Allocator,
     text1: []const u8,
@@ -714,12 +708,12 @@ fn cleanupCharBoundary(allocator: mem.Allocator, solution: *Solution) void {
     var last_delete = Range.empty;
     var last_insert = Range.empty;
     while (read < solution.diffs.items.len) {
-        var d = solution.diffs.items[read];
+        const d = &solution.diffs.items[read];
         read += 1;
-        switch (d) {
-            .equal => |ranges| {
-                var range1 = ranges[0];
-                var range2 = ranges[1];
+        switch (d.*) {
+            .equal => {
+                const range1 = &d.equal[0];
+                const range2 = &d.equal[1];
                 const adjust = boundaryUp(range1.doc, range1.doc.ptr);
                 // If the whole range is sub-character, skip it.
                 if (range1.doc.len <= adjust) continue;
@@ -734,7 +728,8 @@ fn cleanupCharBoundary(allocator: mem.Allocator, solution: *Solution) void {
                 last_delete = Range.empty;
                 last_insert = Range.empty;
             },
-            .delete => |*r| {
+            .delete => {
+                const r = &d.delete;
                 skipOverlap(last_delete, r);
                 if (r.doc.len == 0) continue;
 
@@ -744,7 +739,8 @@ fn cleanupCharBoundary(allocator: mem.Allocator, solution: *Solution) void {
                 r.doc.len += boundaryUp(r.doc, r.doc.ptr + r.doc.len);
                 last_delete = r.*;
             },
-            .insert => |*r| {
+            .insert => {
+                const r = &d.insert;
                 skipOverlap(last_insert, r);
                 if (r.doc.len == 0) continue;
 
@@ -755,7 +751,7 @@ fn cleanupCharBoundary(allocator: mem.Allocator, solution: *Solution) void {
                 last_insert = r.*;
             },
         }
-        solution.diffs.items[retain] = d;
+        solution.diffs.items[retain] = d.*;
         retain += 1;
     }
 

@@ -14,6 +14,15 @@ fn usage(exepath: []const u8, merr: ?Error) Error!void {
     if (merr) |err| return err;
 }
 
+/// adapted from https://github.com/tomhoule/zig-diff/blob/68066d2845df6b64acf554b0d3ea235d4b09b5e0/src/main.zig#L81
+pub fn formatChunk(chunk: lib.Chunk, writer: anytype) !void {
+    switch (chunk) {
+        .equal => |s| try writer.writeAll(s),
+        .delete => |s| try writer.print("\x1b[41m{s}\x1b[0m", .{s}),
+        .insert => |s| try writer.print("\x1b[42m{s}\x1b[0m", .{s}),
+    }
+}
+
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     const aalloc = arena.allocator();
@@ -28,6 +37,6 @@ pub fn main() !void {
     var chunks = try lib.diff(aalloc, doc_a, doc_b);
     const stdout = std.io.getStdOut().writer();
     for (chunks.items) |chunk| {
-        try stdout.print("{}", .{chunk});
+        try formatChunk(chunk, stdout);
     }
 }
