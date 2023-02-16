@@ -28,6 +28,6 @@ pub fn main() !void {
     var chunks = try lib.diff(aalloc, doc_a, doc_b);
     const stdout = std.io.getStdOut().writer();
     for (chunks.items) |chunk| {
-        try stdout.print("{}\n", .{chunk});
+        try stdout.print("{}", .{chunk});
     }
 }
