@@ -171,7 +171,7 @@ fn sameDiffs(expecteds: []const Diff, actuals: []const Diff) bool {
         .{ expecteds, actuals },
     );
     return expecteds.len == actuals.len and
-        for (expecteds) |expected, i|
+        for (expecteds, 0..) |expected, i|
     {
         const actual = actuals[i];
         const etag = std.meta.activeTag(expected);

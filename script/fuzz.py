@@ -25,3 +25,5 @@ with  tempfile.NamedTemporaryFile() as tmpa:
                 print(f"error: exitcode {r.returncode}")
                 print(f"stdout: {r.stdout.read()}")
                 print(f"stderr: {r.stderr.read()}")
+                raise Exception(f"unexpected exitcode {r.returncode}")
+
