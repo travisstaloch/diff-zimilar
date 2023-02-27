@@ -13,7 +13,7 @@ with  tempfile.NamedTemporaryFile() as tmpa:
             raise Exception(f"unexpected exitcode {exitcode}")
         for i in range(iterations):
             if i % 100 == 0:
-                print(i)
+                print(f"{i}/{iterations}")
         
             exitcode = os.system(f"python3 script/random-utf8.py {textlen} > {tmpb.name}")
             if exitcode != 0:
