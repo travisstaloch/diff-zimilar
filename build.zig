@@ -12,8 +12,7 @@ pub fn build(b: *std.Build) void {
     const build_options = b.addOptions();
     build_options.addOption(std.log.Level, "log_level", log_level);
 
-    b.addModule(.{
-        .name = "diff-zimilar",
+    _ = b.addModule("diff-zimilar", .{
         .source_file = .{ .path = "src/lib.zig" },
     });
 
