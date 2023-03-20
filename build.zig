@@ -35,7 +35,6 @@ pub fn build(b: *std.Build) void {
     exe.install();
     const run_cmd = exe.run();
     run_cmd.step.dependOn(b.getInstallStep());
-    run_cmd.condition = .always;
     if (b.args) |args| run_cmd.addArgs(args);
 
     const run_step = b.step("run", "Run the app");
@@ -51,5 +50,5 @@ pub fn build(b: *std.Build) void {
     main_tests.setFilter(test_filter);
 
     const test_step = b.step("test", "Run library tests");
-    test_step.dependOn(&main_tests.step);
+    test_step.dependOn(&main_tests.run().step);
 }
