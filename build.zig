@@ -23,7 +23,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     lib.addOptions("build_options", build_options);
-    lib.install();
+    b.installArtifact(lib);
 
     const exe = b.addExecutable(.{
         .name = "diffit",
@@ -32,8 +32,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     exe.addOptions("build_options", build_options);
-    exe.install();
-    const run_cmd = exe.run();
+    b.installArtifact(exe);
+    const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| run_cmd.addArgs(args);
 
@@ -47,8 +47,10 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    main_tests.setFilter(test_filter);
+    main_tests.filter = test_filter;
 
     const test_step = b.step("test", "Run library tests");
-    test_step.dependOn(&main_tests.run().step);
+    const main_tests_run = b.addRunArtifact(main_tests);
+    main_tests_run.has_side_effects = true;
+    test_step.dependOn(&main_tests_run.step);
 }
