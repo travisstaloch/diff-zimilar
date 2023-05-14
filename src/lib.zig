@@ -288,11 +288,11 @@ pub fn bisect(allocator: mem.Allocator, text1: Range, text2: Range) !DiffList {
     defer v1.deinit(allocator);
     v1.items.len = v_len;
     // TODO - maybe faster to do these mem.set()s together?
-    mem.set(isize, v1.items, -1);
     var v2 = try std.ArrayListUnmanaged(isize).initCapacity(allocator, v_len);
     defer v2.deinit(allocator);
     v2.items.len = v_len;
-    mem.set(isize, v2.items, -1);
+    @memset(v1.items, -1);
+    @memset(v2.items, -1);
     v1.items[v_offset + 1] = 0;
     v2.items[v_offset + 1] = 0;
     const delta = @intCast(isize, text1.doc.len) - @intCast(isize, text2.doc.len);
