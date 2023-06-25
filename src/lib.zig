@@ -692,8 +692,8 @@ fn boundaryUp(doc: []const u8, ptr: [*]const u8) usize {
 }
 
 fn skipOverlap(prev: Range, r: *Range) void {
-    const prev_end = @ptrToInt(prev.doc.ptr + prev.doc.len);
-    const rdoc_ptr = @ptrToInt(r.doc.ptr);
+    const prev_end = @intFromPtr(prev.doc.ptr + prev.doc.len);
+    const rdoc_ptr = @intFromPtr(r.doc.ptr);
     if (prev_end > rdoc_ptr) {
         const delta = @min(prev_end - rdoc_ptr, r.doc.len);
         r.doc.ptr += delta;
