@@ -225,7 +225,7 @@ pub fn compute(allocator: mem.Allocator, text1: Range, text2: Range) !DiffList {
 
     const is_emptys_ = [2]bool{ text1.isEmpty(), text2.isEmpty() };
     const is_emptys: @Vector(2, bool) = is_emptys_;
-    switch (@bitCast(u2, is_emptys)) {
+    switch (@as(u2, @bitCast(is_emptys))) {
         0b11 => return diffs,
         0b01 => {
             try diffs.append(allocator, Diff.init(.insert, text2));
@@ -295,7 +295,7 @@ pub fn bisect(allocator: mem.Allocator, text1: Range, text2: Range) !DiffList {
     @memset(v2.items, -1);
     v1.items[v_offset + 1] = 0;
     v2.items[v_offset + 1] = 0;
-    const delta = @intCast(isize, text1.doc.len) - @intCast(isize, text2.doc.len);
+    const delta = @as(isize, @intCast(text1.doc.len)) - @as(isize, @intCast(text2.doc.len));
     // If the total number of characters is odd, then the front path will
     // collide with the reverse path.
     const front = @mod(delta, 2) != 0;
@@ -310,13 +310,13 @@ pub fn bisect(allocator: mem.Allocator, text1: Range, text2: Range) !DiffList {
         // Walk the front path one step.
         var k1 = -d + k1start;
         while (k1 <= d - k1end) {
-            const k1_offset = @intCast(usize, (@intCast(isize, v_offset) + k1));
-            var x1 = @intCast(usize, if (k1 == -d or (k1 != d and
+            const k1_offset: usize = @intCast((@as(isize, @intCast(v_offset)) + k1));
+            var x1 = @as(usize, @intCast(if (k1 == -d or (k1 != d and
                 v1.items[k1_offset - 1] < v1.items[k1_offset + 1]))
                 v1.items[k1_offset + 1]
             else
-                v1.items[k1_offset - 1] + 1);
-            var y1 = @intCast(usize, (@intCast(isize, x1) - k1));
+                v1.items[k1_offset - 1] + 1));
+            var y1 = @as(usize, @intCast((@as(isize, @intCast(x1)) - k1)));
             if (x1 < text1.doc.len and y1 < text2.doc.len) {
                 const advance = commonPrefix(
                     text1.substringFrom(x1),
@@ -325,7 +325,7 @@ pub fn bisect(allocator: mem.Allocator, text1: Range, text2: Range) !DiffList {
                 x1 += advance;
                 y1 += advance;
             }
-            v1.items[k1_offset] = @intCast(isize, x1);
+            v1.items[k1_offset] =  @intCast(x1);
             if (x1 > text1.doc.len) {
                 // Ran off the right of the graph.
                 k1end += 2;
@@ -333,14 +333,14 @@ pub fn bisect(allocator: mem.Allocator, text1: Range, text2: Range) !DiffList {
                 // Ran off the bottom of the graph.
                 k1start += 2;
             } else if (front) {
-                const k2_offset = @intCast(isize, v_offset) + delta - k1;
-                if (k2_offset >= 0 and k2_offset < @intCast(isize, v_len) and
-                    v2.items[@intCast(usize, k2_offset)] != -1)
+                const k2_offset = @as(isize, @intCast(v_offset)) + delta - k1;
+                if (k2_offset >= 0 and k2_offset < @as(isize, @intCast(v_len)) and
+                    v2.items[@as(usize, @intCast(k2_offset))] != -1)
                 {
                     // Mirror x2 onto top-left coordinate system.
-                    const x2 = @intCast(isize, text1.doc.len) -
-                        v2.items[@intCast(usize, k2_offset)];
-                    if (@intCast(isize, x1) >= x2) {
+                    const x2 = @as(isize, @intCast(text1.doc.len)) -
+                        v2.items[ @intCast(k2_offset)];
+                    if (@as(isize, @intCast(x1)) >= x2) {
                         // Overlap detected.
                         std.log.debug(
                             "bisect() overlap detected 1 {} {} {} {}",
@@ -356,13 +356,13 @@ pub fn bisect(allocator: mem.Allocator, text1: Range, text2: Range) !DiffList {
         // Walk the reverse path one step.
         var k2 = -d + k2start;
         while (k2 <= d - k2end) {
-            const k2_offset = @intCast(usize, (@intCast(isize, v_offset) + k2));
-            var x2 = @intCast(usize, if (k2 == -d or (k2 != d and
+            const k2_offset = @as(usize, @intCast((@as(isize, @intCast(v_offset)) + k2)));
+            var x2 = @as(usize, @intCast(if (k2 == -d or (k2 != d and
                 v2.items[k2_offset - 1] < v2.items[k2_offset + 1]))
                 v2.items[k2_offset + 1]
             else
-                v2.items[k2_offset - 1] + 1);
-            var y2 = @intCast(usize, (@intCast(isize, x2) - k2));
+                v2.items[k2_offset - 1] + 1));
+            var y2:usize =  @intCast((@as(isize, @intCast(x2)) - k2));
             if (x2 < text1.doc.len and y2 < text2.doc.len) {
                 const advance = commonSuffix(
                     text1.substringTo(text1.doc.len - x2),
@@ -371,7 +371,7 @@ pub fn bisect(allocator: mem.Allocator, text1: Range, text2: Range) !DiffList {
                 x2 += advance;
                 y2 += advance;
             }
-            v2.items[k2_offset] = @intCast(isize, x2);
+            v2.items[k2_offset] = @intCast(x2);
             if (x2 > text1.doc.len) {
                 // Ran off the left of the graph.
                 k2end += 2;
@@ -379,12 +379,12 @@ pub fn bisect(allocator: mem.Allocator, text1: Range, text2: Range) !DiffList {
                 // Ran off the top of the graph.
                 k2start += 2;
             } else if (!front) {
-                const k1_offset = @intCast(isize, v_offset) + delta - k2;
-                if (k1_offset >= 0 and k1_offset < @intCast(isize, v_len) and
-                    v1.items[@intCast(usize, k1_offset)] != -1)
+                const k1_offset = @as(isize, @intCast(v_offset)) + delta - k2;
+                if (k1_offset >= 0 and k1_offset < @as(isize, @intCast(v_len)) and
+                    v1.items[@as(usize, @intCast(k1_offset))] != -1)
                 {
-                    const x1 = @intCast(usize, v1.items[@intCast(usize, k1_offset)]);
-                    const y1 = v_offset + x1 - @intCast(usize, k1_offset);
+                    const x1: usize = @intCast(v1.items[@as(usize, @intCast(k1_offset))]);
+                    const y1 = v_offset + x1 - @as(usize, @intCast(k1_offset));
                     // Mirror x2 onto top-left coordinate system.
                     x2 = text1.doc.len - x2;
                     if (x1 >= x2) {
